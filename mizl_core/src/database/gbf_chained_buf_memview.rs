@@ -9,14 +9,26 @@ use crate::{
 pub struct GbfChainedBufMemView<'a> {
     gbf: &'a GbfFile,
     buffer_size: i32,
-    _obfuscated: bool, // for antivirus detection, currently unsupported
+    obfuscated: bool, // to prevent antivirus from triggering
     index_map: Vec<i32>,
     buffer_map: Vec<i32>,
 }
 
 impl<'a> GbfChainedBufMemView<'a> {
-    pub fn new(gbf: &'a GbfFile, mv: &Box<dyn MemView>, nid: i32) -> Result<GbfChainedBufMemView<'a>, MemViewError> {
+    pub const XOR_MASK_BYTES: [u8; 128] = [
+        0x59, 0xea, 0x67, 0x23, 0xda, 0xb8, 0x00, 0xb8, 0xc3, 0x48, 0xdd, 0x8b, 0x21, 0xd6, 0x94, 0x78, 0x35, 0xab,
+        0x2b, 0x7e, 0xb2, 0x4f, 0x82, 0x4e, 0x0e, 0x16, 0xc4, 0x57, 0x12, 0x8e, 0x7e, 0xe6, 0xb6, 0xbd, 0x56, 0x91,
+        0x57, 0x72, 0xe6, 0x91, 0xdc, 0x52, 0x2e, 0xf2, 0x1a, 0xb7, 0xd6, 0x6f, 0xda, 0xde, 0xe8, 0x48, 0xb1, 0xbb,
+        0x50, 0x6f, 0xf4, 0xdd, 0x11, 0xee, 0xf2, 0x67, 0xfe, 0x48, 0x8d, 0xae, 0x69, 0x1a, 0xe0, 0x26, 0x8c, 0x24,
+        0x8e, 0x17, 0x76, 0x51, 0xe2, 0x60, 0xd7, 0xe6, 0x83, 0x65, 0xd5, 0xf0, 0x7f, 0xf2, 0xa0, 0xd6, 0x4b, 0xbd,
+        0x24, 0xd8, 0xab, 0xea, 0x9e, 0xa6, 0x48, 0x94, 0x3e, 0x7b, 0x2c, 0xf4, 0xce, 0xdc, 0x69, 0x11, 0xf8, 0x3c,
+        0xa7, 0x3f, 0x5d, 0x77, 0x94, 0x3f, 0xe4, 0x8e, 0x48, 0x20, 0xdb, 0x56, 0x32, 0xc1, 0x87, 0x01, 0x2e, 0xe3,
+        0x7f, 0x40,
+    ];
+
+    pub fn new(gbf: &'a GbfFile, nid: i32) -> Result<GbfChainedBufMemView<'a>, MemViewError> {
         let endian = Endianness::BigEndian; // always big endian
+        let mv = &gbf.mv;
         let at = &mut gbf.get_buffer_address(nid);
 
         let node_kind = mv.read_u8(at)?;
@@ -26,17 +38,13 @@ impl<'a> GbfChainedBufMemView<'a> {
         let buffer_size = (obf_buffer_size & 0x7fffffff) as i32;
         let obfuscated = (obf_buffer_size & 0x80000000) != 0;
 
-        if obfuscated {
-            panic!("obfuscated chained buffer not supported yet");
-        }
-
         if node_kind == GbfNodeKind::CHAINED_BUFFER_DATA {
             let index_map: Vec<i32> = Vec::with_capacity(0);
             let buffer_map: Vec<i32> = vec![nid];
             return Ok(GbfChainedBufMemView {
                 gbf,
                 buffer_size,
-                _obfuscated: obfuscated,
+                obfuscated,
                 index_map,
                 buffer_map,
             });
@@ -56,13 +64,17 @@ impl<'a> GbfChainedBufMemView<'a> {
             index_map.push(nid);
 
             let last_index = std::cmp::max(index_count - 1, 0);
-            for i in 0..index_count {
+            let mut cur_index = 0;
+            while cur_index < index_count {
                 let next_buffer_index = mv.read_i32(at_chain, endian)?;
-                for _ in 0..indexes_per_buffer {
+                let mut cur_buffer_index = 0;
+                while cur_index < index_count && cur_buffer_index < indexes_per_buffer {
                     buffer_map.push(mv.read_i32(at_chain, endian)?);
+                    cur_index += 1;
+                    cur_buffer_index += 1;
                 }
 
-                if i != last_index {
+                if cur_index != last_index {
                     index_map.push(next_buffer_index); // currently unused since we are readonly
                     *at_chain = gbf.get_buffer_address(next_buffer_index);
                     *at_chain += 1 + 4 + 4; // skip other fields
@@ -72,7 +84,7 @@ impl<'a> GbfChainedBufMemView<'a> {
             return Ok(GbfChainedBufMemView {
                 gbf,
                 buffer_size,
-                _obfuscated: obfuscated,
+                obfuscated,
                 index_map,
                 buffer_map,
             });
@@ -109,6 +121,20 @@ impl<'a> GbfChainedBufMemView<'a> {
                 &mut out_data[out_offset..(out_offset + read_len)],
                 read_len as i32,
             )?;
+
+            if self.obfuscated {
+                // if obfuscated (aka encrypted), decrypt in-place now
+                const XOR_MASK_BYTES_LEN: usize = GbfChainedBufMemView::XOR_MASK_BYTES.len();
+                let mut xor_idx = buffer_offset % XOR_MASK_BYTES_LEN;
+
+                for i in 0..read_len {
+                    out_data[out_offset + i] ^= Self::XOR_MASK_BYTES[xor_idx];
+                    xor_idx += 1;
+                    if xor_idx == XOR_MASK_BYTES_LEN {
+                        xor_idx = 0;
+                    }
+                }
+            }
         }
 
         Ok(read_len as i32)

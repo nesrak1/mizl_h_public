@@ -5,8 +5,8 @@ use crate::{
     },
     ffi::{
         core_framework::{
-            FfiSerializeTrait, FfiSerializer, I8_SZ, I16_SZ, I32_SA, I32_SZ, I64_SZ, WORD_SA, WORD_SZ, align_ptr_fast,
-            align_usize_fast_const, pheap_alloc,
+            FfiSerializeTrait, FfiSerializer, I32_SA, I32_SZ, WORD_SA, WORD_SZ, align_ptr_fast, align_usize_fast_const,
+            pheap_alloc,
         },
         core_types::{OpaqueMFFI, StringFFI, VecFFI},
         definitions::memview::{MemViewVTable, mem_view_error_cpret, mem_view_error_dret, mem_view_error_pret},

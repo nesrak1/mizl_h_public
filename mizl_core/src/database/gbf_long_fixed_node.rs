@@ -95,6 +95,8 @@ impl<'g> GbfLongFixedNode<'g> {
             }
         }
 
+        // no match. if this element were to be added,
+        // we would insert it to the right of `min`
         Ok(BinarySearchMatch::Missing(min))
     }
 
@@ -105,7 +107,7 @@ impl<'g> GbfLongFixedNode<'g> {
         schema: &GbfTableSchema,
     ) -> Result<Option<GbfRecord>, MemViewError> {
         let at = &mut self.get_value_addr_at(index)?;
-        let record = schema.read(GbfFieldValue::Long(key), &self.gbf.mv, at)?;
+        let record = schema.read_record(GbfFieldValue::Long(key), &self.gbf.mv, at)?;
         Ok(Some(record))
     }
 

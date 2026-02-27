@@ -3,11 +3,13 @@ use crate::{
     memory::memview::{MemView, MemViewError},
 };
 
-pub fn read_string(mv: &Box<dyn MemView>, at: &mut u64) -> Result<String, MemViewError> {
+pub fn read_string(mv: &Box<dyn MemView>, at: &mut u64) -> Result<Option<String>, MemViewError> {
     let endian = Endianness::BigEndian; // always big endian
 
     let str_len = mv.read_i32(at, endian)?;
-    if (str_len as u64 + *at) >= mv.max_address()? {
+    if str_len == -1 {
+        return Ok(None);
+    } else if (str_len as u64 + *at) >= mv.max_address()? {
         return Err(MemViewError::EndOfStream);
     } else if str_len < 0 {
         let err_str = format!("invalid string length {}", str_len);
@@ -17,7 +19,7 @@ pub fn read_string(mv: &Box<dyn MemView>, at: &mut u64) -> Result<String, MemVie
     let mut str_bytes = vec![0u8; str_len as usize];
     mv.read_bytes(at, &mut str_bytes, str_len)?;
     match String::from_utf8(str_bytes) {
-        Ok(v) => Ok(v),
+        Ok(v) => Ok(Some(v)),
         Err(_) => Err(MemViewError::generic_static("invalid utf-8 string read")),
     }
 }

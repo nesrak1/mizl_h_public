@@ -80,16 +80,15 @@ impl<'g> GbfLongInteriorNode<'g> {
             }
         }
 
+        // no match. if this element were to be added,
+        // we would insert it to the right of `min`
         Ok(BinarySearchMatch::Missing(min))
     }
 
     pub fn get_entry(&self, key: i64) -> Result<i32, MemViewError> {
         let entry_idx = match self.find_entry_index_by_key(key)? {
             BinarySearchMatch::Found(v) => v,
-            BinarySearchMatch::Missing(_) => {
-                let err_str = format!("found invalid interior node that is either empty or corrupt");
-                return Err(MemViewError::generic_dynamic(err_str));
-            }
+            BinarySearchMatch::Missing(v) => v - 1,
         };
         self.get_value_at(entry_idx)
     }

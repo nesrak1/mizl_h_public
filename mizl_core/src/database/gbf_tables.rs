@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     database::{
         gbf::GbfFile,
-        gbf_record::GbfFieldKind,
+        gbf_record::{GbfExtensionKind, GbfFieldKind},
         gbf_table_schema::GbfTableSchema,
         gbf_table_view::{GbfTableView, GbfTableViewIterator},
     },
@@ -14,11 +14,16 @@ use crate::{
 pub struct GbfTableDef {
     pub schema: GbfTableSchema,
     pub root_nid: i32,
+    pub index_table_defs: Vec<GbfTableDef>,
 }
 
 impl GbfTableDef {
     pub fn new(schema: GbfTableSchema, root_nid: i32) -> GbfTableDef {
-        GbfTableDef { schema, root_nid }
+        GbfTableDef {
+            schema,
+            root_nid,
+            index_table_defs: Vec::new(),
+        }
     }
 }
 
@@ -34,13 +39,15 @@ impl GbfTables {
     const KEY_TYPE_IDX: usize = 3;
     const FIELD_TYPES_IDX: usize = 4;
     const FIELD_NAMES_IDX: usize = 5;
-    const _INDEX_COLUMN_IDX: usize = 6;
+    const INDEX_COLUMN_IDX: usize = 6;
     const _MAX_KEY_IDX: usize = 7;
     const _RECORD_COUNT_IDX: usize = 8;
 
+    const FIELD_EXTENSION_INDICATOR: u8 = 0xff;
+
     // the root tables list always uses this hardcoded schema
     fn make_schema() -> GbfTableSchema {
-        let mut schema = GbfTableSchema::new("Master table".into(), "TableNum".into(), GbfFieldKind::Long);
+        let mut schema = GbfTableSchema::new("Master table".into(), "TableNum".into(), GbfFieldKind::Long, None);
         schema.add_column(GbfFieldKind::String, "TableName".into());
         schema.add_column(GbfFieldKind::Int, "SchemaVersion".into());
         schema.add_column(GbfFieldKind::Int, "RootBufferId".into());
@@ -71,6 +78,7 @@ impl GbfTables {
 
             let name = item_uw.get_string(Self::TABLE_NAME_IDX)?;
             let root_buffer_id = item_uw.get_int(Self::ROOT_BUFFER_ID_IDX)?;
+            let indexing_column = item_uw.get_int(Self::INDEX_COLUMN_IDX)?;
             let key_type = item_uw.get_byte(Self::KEY_TYPE_IDX)?;
             let field_types_buf = item_uw.get_bytes(Self::FIELD_TYPES_IDX)?;
             let mut field_names_str = item_uw.get_string(Self::FIELD_NAMES_IDX)?;
@@ -94,10 +102,12 @@ impl GbfTables {
             };
 
             let mut field_kinds: Vec<GbfFieldKind> = Vec::new();
-            for field_type in field_types_buf {
-                if field_type == 0xff {
+            let mut field_index = 0;
+            while field_index < field_types_buf.len() {
+                let field_type = field_types_buf[field_index];
+                field_index += 1;
+                if field_type == Self::FIELD_EXTENSION_INDICATOR {
                     // field extension indicator hit
-                    // todo: handle sparse field list
                     break;
                 }
 
@@ -106,6 +116,25 @@ impl GbfTables {
                     None => return Err(MemViewError::generic_static("read invalid field kind")),
                 };
                 field_kinds.push(field_kind);
+            }
+
+            // parse extensions (there is currently only one)
+            let mut sparse_columns: Option<HashSet<i32>> = None;
+            while field_index < field_types_buf.len() {
+                let extension_type = field_types_buf[field_index];
+                field_index += 1;
+                match GbfExtensionKind::from_u8(extension_type) {
+                    Some(v) => match v {
+                        GbfExtensionKind::SparseFieldList => {
+                            sparse_columns = Some(Self::parse_sparse_field_list(
+                                &field_types_buf,
+                                field_kinds.len(),
+                                &mut field_index,
+                            )?);
+                        }
+                    },
+                    _ => return Err(MemViewError::generic_static("read invalid extension kind")),
+                }
             }
 
             let mut field_names: Vec<String> = Vec::new();
@@ -126,15 +155,47 @@ impl GbfTables {
 
             let table_def_lookup_name = name.clone();
 
-            let mut iter_schema = GbfTableSchema::new(name, key_name, key_kind);
+            let mut iter_schema = GbfTableSchema::new(name, key_name, key_kind, sparse_columns);
             for (kind, name) in field_kinds.into_iter().zip(field_names.into_iter()) {
                 iter_schema.add_column(kind, name);
             }
 
             let iter_table_def = GbfTableDef::new(iter_schema, root_buffer_id);
-            table_defs.insert(table_def_lookup_name, iter_table_def);
+            if let Some(table_def) = table_defs.get_mut(&table_def_lookup_name) {
+                // add index table to base table (index column should not be -1)
+                if indexing_column == -1 {
+                    return Err(MemViewError::generic_static("base table was not first"));
+                }
+                table_def.index_table_defs.push(iter_table_def);
+            } else {
+                // new table (index column should be -1)
+                if indexing_column != -1 {
+                    return Err(MemViewError::generic_static("base table was not first"));
+                }
+                table_defs.insert(table_def_lookup_name, iter_table_def);
+            }
         }
 
         Ok(GbfTables { table_defs })
+    }
+
+    fn parse_sparse_field_list(
+        field_types_buf: &Vec<u8>,
+        field_count: usize,
+        field_index: &mut usize,
+    ) -> Result<HashSet<i32>, MemViewError> {
+        let mut column_idxs: HashSet<i32> = HashSet::new();
+        while *field_index < field_types_buf.len() && field_types_buf[*field_index] != Self::FIELD_EXTENSION_INDICATOR {
+            let column_idx = field_types_buf[*field_index] as i32;
+            if column_idx >= field_count as i32 {
+                return Err(MemViewError::generic_static(
+                    "sparse field `column_idx` was larger than field count",
+                ));
+            }
+
+            column_idxs.insert(column_idx);
+            *field_index += 1;
+        }
+        Ok(column_idxs)
     }
 }

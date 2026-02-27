@@ -11,9 +11,10 @@ pub mod remote;
 pub mod shared;
 pub mod sleigh;
 
-use crate::database::gbf_table_view::GbfTableViewIterator;
 use crossbeam::{channel::unbounded, select};
+use database::gbf_chained_buf_memview::GbfChainedBufMemView;
 use database::{gbf::GbfFile, gbf_table_view::GbfTableView};
+use database::{gbf_record::GbfFieldValue, gbf_table_view::GbfTableViewIterator};
 use debugger::{
     debugger::{Debugger, DebuggerEvent, DebuggerEventKind, DebuggerHelper, DebuggerThreadIndex},
     host_debuggers::debugger_linux::DebuggerLinux,
@@ -21,6 +22,7 @@ use debugger::{
 };
 use memory::memview::{MemView, StaticMemView};
 use sleigh::disasm::{DisasmDispInstructionRun, DisasmDispInstructionRunType};
+use std::fs::File;
 use std::{
     io::{self, Write},
     sync::Arc,
@@ -140,13 +142,13 @@ fn main() {
         println!("found table {}", table_name);
     }
 
-    let metadata = gbf.tables.table_defs.get("Metadata").expect("no metadata");
-    let metadata_nid = metadata.root_nid;
-    let metadata_schema = &metadata.schema;
+    let symbols = gbf.tables.table_defs.get("Symbols").expect("no metadata");
+    let symbols_nid = symbols.root_nid;
+    let symbol_schema = &symbols.schema;
 
-    println!("metadata nid: {}", metadata_nid);
+    println!("symbol nid: {}", symbols_nid);
 
-    let metadata_tv = match GbfTableView::new(&gbf, metadata_schema, metadata_nid) {
+    let symbol_tv = match GbfTableView::new(&gbf, symbol_schema, symbols_nid) {
         Ok(v) => v,
         Err(e) => {
             println!("error reading metadata: {}", e);
@@ -154,20 +156,43 @@ fn main() {
         }
     };
 
-    let record = metadata_tv
-        .get_record_at_after_long(i64::MIN)
-        .expect("got error")
-        .expect("got none");
-    match record.key {
-        database::gbf_record::GbfFieldValue::Boolean(_) => todo!(),
-        database::gbf_record::GbfFieldValue::Byte(_) => todo!(),
-        database::gbf_record::GbfFieldValue::Short(_) => todo!(),
-        database::gbf_record::GbfFieldValue::Int(_) => todo!(),
-        database::gbf_record::GbfFieldValue::Long(v) => {
-            println!("key long value is {}", v);
-        }
-        database::gbf_record::GbfFieldValue::String(_) => todo!(),
-        database::gbf_record::GbfFieldValue::Bytes(_) => todo!(),
+    for name in &symbol_schema.names {
+        println!("column: {name}");
+    }
+
+    let name_idx = symbol_schema.get_column_idx("Name").unwrap();
+    let address_idx = symbol_schema.get_column_idx("Address").unwrap();
+    // let namespace_idx = symbol_schema.get_column_idx("Namespace").unwrap();
+    // let symbol_type_idx = symbol_schema.get_column_idx("Symbol Type").unwrap();
+    // let string_data_idx = symbol_schema.get_column_idx("String Data").unwrap();
+    // let flags_idx = symbol_schema.get_column_idx("Flags").unwrap();
+    // let locator_hash_idx = symbol_schema.get_column_idx("Locator Hash").unwrap();
+    // let primary_idx = symbol_schema.get_column_idx("Primary").unwrap();
+    // let datatype_idx = symbol_schema.get_column_idx("Datatype").unwrap();
+    // let variable_offset_idx = symbol_schema.get_column_idx("Variable Offset").unwrap();
+
+    let symbol_tvi = GbfTableViewIterator::new(&symbol_tv, i64::MIN).expect("error on iterator ctor");
+    for field in symbol_tvi {
+        let field_uw = field.expect("error during field read");
+        let key_value = match field_uw.key {
+            GbfFieldValue::Long(v) => v,
+            _ => panic!("error during key get"),
+        };
+        let name_value = field_uw.get_string(name_idx).expect("error during value get");
+        let address_value = field_uw.get_long(address_idx).expect("error during value get");
+        println!("key: {}, name: {}, address: {}", key_value, name_value, address_value);
+    }
+
+    let cbmv = GbfChainedBufMemView::new(&gbf, 10).expect("should be able to read cbmv");
+    let max_address = cbmv.max_address().expect("should be able to read max address");
+    let mut read_bytes = vec![0; max_address as usize];
+    let mut cbmv_at = 0u64;
+    cbmv.read_bytes(&mut cbmv_at, &mut read_bytes, max_address as i32)
+        .expect("should be able to read");
+
+    {
+        let mut file = File::create("test.bin").expect("should be able to open file");
+        file.write_all(&read_bytes).expect("should be able to write to file");
     }
 
     // let metadata_key_idx = metadata_schema.get_column_idx("Key").expect("no key field");

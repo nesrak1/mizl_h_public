@@ -21,6 +21,7 @@ impl GbfRecord {
         }
     }
 
+    // todo: move get_xxx logic to GbfFieldValue
     pub fn get_boolean(&self, index: usize) -> Result<bool, MemViewError> {
         match self.get_value_or_err(index)? {
             GbfFieldValue::Boolean(v) => Ok(*v),
@@ -151,6 +152,28 @@ impl GbfFieldKind {
     pub const BYTES: u8 = 5;
     pub const BOOLEAN: u8 = 6;
     //pub const FIXED10: u8 = 7;
+}
+
+pub enum GbfExtensionKind {
+    SparseFieldList = 1,
+}
+impl GbfExtensionKind {
+    pub fn from_u8(value: u8) -> Option<GbfExtensionKind> {
+        match value & 0xf {
+            Self::SPARSE_FIELD_LIST => Some(Self::SparseFieldList),
+            _ => None,
+        }
+    }
+
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            Self::SparseFieldList => Self::SPARSE_FIELD_LIST,
+        }
+    }
+}
+
+impl GbfExtensionKind {
+    pub const SPARSE_FIELD_LIST: u8 = 1;
 }
 
 pub enum GbfFieldValue {
